@@ -493,11 +493,13 @@ function renderAuth(mode = 'in') {
         if (error) throw error;
         if (!uid) throw new Error('Invalid username or password.');
         localStorage.setItem('learnx_user_id', uid);
+        localStorage.setItem('learnx_username', uname);
       } else {
         const { data: uid, error } = await sb.rpc('register_user', { uname: uname, pw: pw });
         if (error) throw error;
         if (!uid) throw new Error('Could not create the account.');
         localStorage.setItem('learnx_user_id', uid);
+        localStorage.setItem('learnx_username', uname);
       }
       await onSession();
     } catch (err) { msg(err.message); btn.disabled = false; btn.textContent = label; }
@@ -550,12 +552,12 @@ window.addEventListener('hashchange', route);
 /* ───────── HOME ───────── */
 async function vHome() {
   const now = new Date().toISOString();
-  const cnt = t => sb.from(t).select('id', { count: 'exact', head: true }).then(r => r.count || 0);
+  const cnt = t => sb.from(t).select('id', { count: 'exact', head: true }).eq('user_id', state.user.id).then(r => r.count || 0);
   const [nNotes, nCards, nQuiz, due, att, recent] = await Promise.all([
     cnt('notes'), cnt('flashcards'), cnt('quizzes'),
-    sb.from('flashcards').select('id', { count: 'exact', head: true }).lte('due_at', now).then(r => r.count || 0),
-    q(sb.from('quiz_attempts').select('score,total').order('created_at', { ascending: false }).limit(20)),
-    q(sb.from('notes').select('id,title,file_name,created_at').order('created_at', { ascending: false }).limit(5)),
+    sb.from('flashcards').select('id', { count: 'exact', head: true }).eq('user_id', state.user.id).lte('due_at', now).then(r => r.count || 0),
+    q(sb.from('quiz_attempts').select('score,total').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(20)),
+    q(sb.from('notes').select('id,title,file_name,created_at').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(5)),
   ]);
   const avg = att.length ? Math.round(att.reduce((s, a) => s + a.score / a.total, 0) / att.length * 100) + '%' : '–';
   const h = new Date().getHours(), g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
@@ -577,7 +579,7 @@ async function vHome() {
 
 /* ───────── NOTES ───────── */
 async function vNotes() {
-  const notes = await q(sb.from('notes').select('id,title,content,file_name,file_type,created_at').order('created_at', { ascending: false }));
+  const notes = await q(sb.from('notes').select('id,title,content,file_name,file_type,created_at').eq('user_id', state.user.id).order('created_at', { ascending: false }));
   const card = n => `<a class="tile glass" href="#/notes/${n.id}" data-t="${esc((n.title + ' ' + n.content).toLowerCase())}"><h3>${esc(n.title)}</h3><p>${esc(n.content.slice(0, 220) || 'No text extracted.')}</p><div class="meta">${n.file_type ? `<span class="pill">${esc(n.file_type.toUpperCase())}</span>` : ''}<span>${fmtDate(n.created_at)}</span></div></a>`;
   $('#view').innerHTML = head('Notes', 'Everything you study from, in one place.', `<button class="btn" data-act="new-note">${ic('plus')}New note</button><button class="btn primary" data-act="pick-file">${ic('upload')}Upload</button>`) +
     `<div class="drop glass" id="drop">Drop PDF, PowerPoint, Word or text files here</div>` +
@@ -659,8 +661,8 @@ async function uploadFiles(files) {
 /* ───────── FLASHCARDS ───────── */
 async function vDecks() {
   const [decks, cards] = await Promise.all([
-    q(sb.from('decks').select('*').order('created_at', { ascending: false })),
-    q(sb.from('flashcards').select('deck_id,due_at')),
+    q(sb.from('decks').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false })),
+    q(sb.from('flashcards').select('deck_id,due_at').eq('user_id', state.user.id)),
   ]);
   const now = Date.now();
   const stat = id => { const c = cards.filter(x => x.deck_id === id); return { n: c.length, due: c.filter(x => new Date(x.due_at) <= now).length }; };
@@ -735,9 +737,9 @@ async function vStudy(deckId) {
 /* ───────── QUIZZES ───────── */
 async function vQuizzes() {
   const [quizzes, qs, atts] = await Promise.all([
-    q(sb.from('quizzes').select('*').order('created_at', { ascending: false })),
+    q(sb.from('quizzes').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false })),
     q(sb.from('quiz_questions').select('quiz_id')),
-    q(sb.from('quiz_attempts').select('quiz_id,score,total')),
+    q(sb.from('quiz_attempts').select('quiz_id,score,total').eq('user_id', state.user.id)),
   ]);
   $('#view').innerHTML = head('Quizzes', 'Multiple choice, with the reasoning shown after every answer.', `<button class="btn primary" data-act="new-quiz">${ic('plus')}New quiz</button>`) +
     (quizzes.length ? `<div class="grid">${quizzes.map(z => { const n = qs.filter(x => x.quiz_id === z.id).length, a = atts.filter(x => x.quiz_id === z.id), best = a.length ? Math.max(...a.map(x => Math.round(x.score / x.total * 100))) : null;
@@ -778,7 +780,7 @@ function runQuiz(quiz, qs) {
     const pct = Math.round(score / qs.length * 100);
     v.innerHTML = `<div class="q"><div class="score glass"><b>${score}/${qs.length}</b><h3>${pct >= 80 ? 'Strong result' : pct >= 50 ? 'Getting there' : 'Worth another pass'}</h3><p style="margin:6px 0 22px">${pct}% correct</p><div style="display:flex;gap:8px;justify-content:center"><button class="btn" onclick="location.hash='#/quizzes'">All quizzes</button><button class="btn primary" id="again">Try again</button></div></div></div>`;
     $('#again').onclick = () => runQuiz(quiz, qs);
-    sb.from('quiz_attempts').insert({ quiz_id: quiz.id, score, total: qs.length, answers }).then(({ error }) => error && toast('Could not save your result: ' + error.message, 'err'));
+    sb.from('quiz_attempts').insert({ user_id: state.user.id, quiz_id: quiz.id, score, total: qs.length, answers }).then(({ error }) => error && toast('Could not save your result: ' + error.message, 'err'));
   };
   show();
 }
@@ -824,7 +826,7 @@ async function saveDeck(title, cards, noteId) {
 /* ───────── actions ───────── */
 const actions = {
   theme: toggleTheme,
-  signout: () => { localStorage.removeItem('learnx_user_id'); location.reload(); },
+  signout: () => { localStorage.removeItem('learnx_user_id'); localStorage.removeItem('learnx_username'); location.reload(); },
   'pick-file': () => $('#fileIn').click(),
   'new-note': () => sheet({
     title: 'New note', body: `<div class="field"><label>Title</label><input type="text" name="title" placeholder="Untitled"></div><div class="field"><label>Text</label><textarea name="content" rows="8" placeholder="Paste or type your notes"></textarea></div>`,
@@ -859,7 +861,8 @@ $('#fileIn').addEventListener('change', e => { uploadFiles([...e.target.files]);
 async function onSession() {
   const uid = localStorage.getItem('learnx_user_id');
   if (!uid) { state.user = null; renderAuth(); applyTheme(document.documentElement.dataset.theme); return; }
-  state.user = { id: uid, username: 'User' };
+  const uname = localStorage.getItem('learnx_username') || 'User';
+  state.user = { id: uid, username: uname };
   renderShell(); await loadSettings(); route();
 }
 onSession();
