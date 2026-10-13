@@ -814,7 +814,7 @@ function newQuizSheet() {
 }
 async function saveQuiz(title, rows, noteId) {
   const quiz = await q(sb.from('quizzes').insert({ user_id: state.user.id, title, note_id: noteId }).select().single());
-  await q(sb.from('quiz_questions').insert(rows.map((r, i) => ({ ...r, quiz_id: quiz.id, position: i }))));
+  await q(sb.from('quiz_questions').insert(rows.map((r, i) => ({ ...r, user_id: state.user.id, quiz_id: quiz.id, position: i }))));
   location.hash = '#/quizzes/' + quiz.id;
 }
 async function saveDeck(title, cards, noteId) {
