@@ -492,12 +492,7 @@ function renderAuth(mode = 'in') {
       if (mode === 'in') {
         const { error } = await sb.auth.signInWithPassword({ email, password: pw }); if (error) throw error;
       } else {
-        // 1. Check if username is available before signing up
-        const { data: available, error: availError } = await sb.rpc('username_available', { uname: uname });
-        if (availError) throw availError;
-        if (!available) return msg('That username is already taken. Please choose another one.');
-
-        // 2. Proceed with signup
+        // Proceed directly with signup. The database trigger handles duplicate username checking.
         const { data, error } = await sb.auth.signUp({ email, password: pw, options: { data: { display_name: uname }, emailRedirectTo: location.href.split('#')[0] } });
         if (error) throw error;
         if (!data.session) { msg('Account created. Sign in to continue.', 'ok'); btn.disabled = false; btn.textContent = label; e.target.reset(); }
