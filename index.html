@@ -471,7 +471,8 @@ function renderAuth(mode = 'in') {
     <div class="seg" role="tablist"><button role="tab" aria-selected="${mode === 'in'}" data-mode="in">Sign in</button><button role="tab" aria-selected="${mode === 'up'}" data-mode="up">Sign up</button></div>
     <div id="authMsg"></div>
     <form id="authForm" novalidate>
-      <div class="field"><label for="user">Username</label><input id="user" name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="yourname" required></div>
+      <div class="field"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" placeholder="you@school.edu" required></div>
+      ${mode === 'up' ? '<div class="field"><label for="user">Username</label><input id="user" name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="yourname" required></div>' : ''}
       <div class="field"><label for="pw">Password</label><input id="pw" name="pw" type="password" autocomplete="${mode === 'in' ? 'current-password' : 'new-password'}" placeholder="${mode === 'up' ? 'At least 8 characters' : 'Your password'}" required></div>
       <button class="btn primary block" type="submit">${mode === 'in' ? 'Sign in' : 'Create account'}</button>
     </form>
@@ -481,10 +482,9 @@ function renderAuth(mode = 'in') {
   const msg = (t, k = 'err') => $('#authMsg').innerHTML = t ? `<div class="msg ${k}">${esc(t)}</div>` : '';
   $('#authForm').onsubmit = async e => {
     e.preventDefault(); msg('');
-    const f = new FormData(e.target), uname = f.get('user').trim(), pw = f.get('pw');
-    if (!uname || !pw) return msg('Enter your username and password.');
+    const f = new FormData(e.target), email = f.get('email').trim(), uname = (f.get('user') || '').trim(), pw = f.get('pw');
+    if (!email || !pw) return msg('Enter your email and password.');
     if (mode === 'up' && !/^[A-Za-z0-9._-]{3,20}$/.test(uname)) return msg('Use 3 to 20 characters: letters, numbers, dots, dashes or underscores.');
-    const email = uname.includes('@') ? uname : uname.toLowerCase() + '@learnx13.app';
     if (mode === 'up' && pw.length < 8) return msg('Use a password with at least 8 characters.');
     const btn = $('button[type=submit]', e.target), label = btn.textContent;
     btn.disabled = true; btn.innerHTML = '<span class="spin sm"></span>';
