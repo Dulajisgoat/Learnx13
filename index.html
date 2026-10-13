@@ -482,7 +482,6 @@ function renderAuth(mode = 'in') {
   $('#authForm').onsubmit = async e => {
     e.preventDefault(); msg('');
     const f = new FormData(e.target), uname = f.get('user').trim(), pw = f.get('pw');
-    const email = uname.toLowerCase() + '@learnx13.app';
     if (!uname || !pw) return msg('Enter your username and password.');
     if (mode === 'up' && !/^[A-Za-z0-9._-]{3,20}$/.test(uname)) return msg('Use 3 to 20 characters: letters, numbers, dots, dashes or underscores.');
     if (mode === 'up' && pw.length < 8) return msg('Use a password with at least 8 characters.');
@@ -490,13 +489,17 @@ function renderAuth(mode = 'in') {
     btn.disabled = true; btn.innerHTML = '<span class="spin sm"></span>';
     try {
       if (mode === 'in') {
-        const { error } = await sb.auth.signInWithPassword({ email, password: pw }); if (error) throw error;
-      } else {
-        // Proceed directly with signup. The database trigger handles duplicate username checking.
-        const { data, error } = await sb.auth.signUp({ email, password: pw, options: { data: { display_name: uname }, emailRedirectTo: location.href.split('#')[0] } });
+        const { data: uid, error } = await sb.rpc('login_user', { uname: uname, pw: pw });
         if (error) throw error;
-        if (!data.session) { msg('Account created. Sign in to continue.', 'ok'); btn.disabled = false; btn.textContent = label; e.target.reset(); }
+        if (!uid) throw new Error('Invalid username or password.');
+        localStorage.setItem('learnx_user_id', uid);
+      } else {
+        const { data: uid, error } = await sb.rpc('register_user', { uname: uname, pw: pw });
+        if (error) throw error;
+        if (!uid) throw new Error('Could not create the account.');
+        localStorage.setItem('learnx_user_id', uid);
       }
+      await onSession();
     } catch (err) { msg(err.message); btn.disabled = false; btn.textContent = label; }
   };
 }
@@ -504,13 +507,13 @@ function renderAuth(mode = 'in') {
 /* ───────── shell + routing ───────── */
 const NAV = [['home', 'Home', 'home'], ['notes', 'Notes', 'notes'], ['flashcards', 'Flashcards', 'cards'], ['quizzes', 'Quizzes', 'quiz']];
 function renderShell() {
-  const name = state.user.user_metadata?.display_name || state.user.email.split('@')[0];
+  const name = state.user.username;
   $('#root').innerHTML = `<div class="app">
     <aside class="side glass">
       <div class="brand">${donut()}LearnX13</div>
       <nav class="nav" aria-label="Main"><span class="nav-ind"></span>${NAV.map(([k, l, i]) => `<a href="#/${k}" data-nav="${k}">${ic(i)}<span>${l}</span></a>`).join('')}</nav>
       <div class="side-foot">
-        <div class="me"><div class="avatar">${esc(name[0].toUpperCase())}</div><div style="min-width:0"><b>${esc(name)}</b><span>${esc(state.user.email.endsWith('@learnx13.app') ? '@' + state.user.email.split('@')[0] : state.user.email)}</span></div></div>
+        <div class="me"><div class="avatar">${esc(name[0].toUpperCase())}</div><div style="min-width:0"><b>${esc(name)}</b><span>@${esc(state.user.username)}</span></div></div>
         <div class="foot-row"><button type="button" class="btn icon tswitch" data-act="theme" role="switch" aria-checked="false" aria-label="Dark mode"><svg class="i tmode" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><mask id="tm"><rect width="24" height="24" fill="#fff"/><circle class="tmask" cx="30" cy="-6" r="7" fill="#000"/></mask><circle class="core" cx="12" cy="12" r="5" fill="currentColor" stroke="none" mask="url(#tm)"/><g class="rays"><path d="M12 2.5v2M12 19.5v2M4.8 4.8l1.4 1.4M17.8 17.8l1.4 1.4M2.5 12h2M19.5 12h2M4.8 19.2l1.4-1.4M17.8 6.2l1.4-1.4"/></g></svg></button><button class="btn" data-act="signout">${ic('out')}Sign out</button></div>
       </div>
     </aside>
@@ -556,7 +559,7 @@ async function vHome() {
   ]);
   const avg = att.length ? Math.round(att.reduce((s, a) => s + a.score / a.total, 0) / att.length * 100) + '%' : '–';
   const h = new Date().getHours(), g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-  const name = (state.user.user_metadata?.display_name || state.user.email.split('@')[0]).split(' ')[0];
+  const name = state.user.username.split(' ')[0];
   $('#view').innerHTML = head(`${g}, ${esc(name)}`, due ? `You have ${due} flashcard${due > 1 ? 's' : ''} ready to review.` : 'Nothing is due. A good time to add notes.') +
     `<div class="stats">
       <div class="stat glass"><span class="ico">${ic('notes')}</span><b>${nNotes}</b><span>Notes</span></div>
@@ -646,7 +649,7 @@ async function uploadFiles(files) {
       const path = `${state.user.id}/${crypto.randomUUID()}-${f.name.replace(/[^\w.\-]+/g, '_')}`;
       const { error: ue } = await sb.storage.from('notes').upload(path, f, { contentType: f.type || undefined });
       if (ue) toast('Saved the text, but the original file could not be stored: ' + ue.message, 'err');
-      await q(sb.from('notes').insert({ title: f.name.replace(/\.[^.]+$/, ''), content: text, file_path: ue ? null : path, file_name: f.name, file_type: ext, file_size: f.size }));
+      await q(sb.from('notes').insert({ title: f.name.replace(/\.[^.]+$/, ''), content: text, user_id: state.user.id, file_path: ue ? null : path, file_name: f.name, file_type: ext, file_size: f.size }));
       toast(`Added ${f.name}`);
     } catch (e) { toast(e.message || String(e), 'err'); }
   }
@@ -808,24 +811,24 @@ function newQuizSheet() {
   });
 }
 async function saveQuiz(title, rows, noteId) {
-  const quiz = await q(sb.from('quizzes').insert({ title, note_id: noteId }).select().single());
+  const quiz = await q(sb.from('quizzes').insert({ user_id: state.user.id, title, note_id: noteId }).select().single());
   await q(sb.from('quiz_questions').insert(rows.map((r, i) => ({ ...r, quiz_id: quiz.id, position: i }))));
   location.hash = '#/quizzes/' + quiz.id;
 }
 async function saveDeck(title, cards, noteId) {
-  const deck = await q(sb.from('decks').insert({ title, note_id: noteId }).select().single());
-  await q(sb.from('flashcards').insert(cards.map(c => ({ deck_id: deck.id, front: c.front, back: c.back }))));
+  const deck = await q(sb.from('decks').insert({ user_id: state.user.id, title, note_id: noteId }).select().single());
+  await q(sb.from('flashcards').insert(cards.map(c => ({ user_id: state.user.id, deck_id: deck.id, front: c.front, back: c.back }))));
   location.hash = '#/flashcards/' + deck.id;
 }
 
 /* ───────── actions ───────── */
 const actions = {
   theme: toggleTheme,
-  signout: async () => { await sb.auth.signOut(); },
+  signout: () => { localStorage.removeItem('learnx_user_id'); location.reload(); },
   'pick-file': () => $('#fileIn').click(),
   'new-note': () => sheet({
     title: 'New note', body: `<div class="field"><label>Title</label><input type="text" name="title" placeholder="Untitled"></div><div class="field"><label>Text</label><textarea name="content" rows="8" placeholder="Paste or type your notes"></textarea></div>`,
-    onSubmit: async f => { const n = await q(sb.from('notes').insert({ title: f.get('title').trim() || 'Untitled', content: f.get('content') }).select().single()); location.hash = '#/notes/' + n.id; },
+    onSubmit: async f => { const n = await q(sb.from('notes').insert({ user_id: state.user.id, title: f.get('title').trim() || 'Untitled', content: f.get('content') }).select().single()); location.hash = '#/notes/' + n.id; },
   }),
   'del-note': t => confirmSheet('Delete this note?', 'The note and its original file will be removed. Decks and quizzes made from it stay.', 'Delete', async () => {
     if (t.dataset.path) await sb.storage.from('notes').remove([t.dataset.path]);
@@ -834,12 +837,12 @@ const actions = {
   'dl-note': async t => { const { data, error } = await sb.storage.from('notes').createSignedUrl(t.dataset.path, 60, { download: t.dataset.name }); if (error) return toast(error.message, 'err'); location.href = data.signedUrl; },
   'new-deck': () => sheet({
     title: 'New deck', body: `<div class="field"><label>Title</label><input type="text" name="title" placeholder="Cell biology" required></div><div class="field"><label>Description (optional)</label><input type="text" name="d"></div>`,
-    onSubmit: async f => { if (!f.get('title').trim()) throw new Error('Give the deck a title.'); const d = await q(sb.from('decks').insert({ title: f.get('title').trim(), description: f.get('d').trim() || null }).select().single()); location.hash = '#/flashcards/' + d.id; },
+    onSubmit: async f => { if (!f.get('title').trim()) throw new Error('Give the deck a title.'); const d = await q(sb.from('decks').insert({ user_id: state.user.id, title: f.get('title').trim(), description: f.get('d').trim() || null }).select().single()); location.hash = '#/flashcards/' + d.id; },
   }),
   'del-deck': t => confirmSheet('Delete this deck?', 'All of its cards will be deleted.', 'Delete', async () => { await q(sb.from('decks').delete().eq('id', t.dataset.id)); location.hash = '#/flashcards'; }),
   'add-card': t => sheet({
     title: 'Add card', body: `<div class="field"><label>Front</label><textarea name="f" rows="3" required></textarea></div><div class="field"><label>Back</label><textarea name="b" rows="3" required></textarea></div>`,
-    onSubmit: async f => { if (!f.get('f').trim() || !f.get('b').trim()) throw new Error('Fill in both sides.'); await q(sb.from('flashcards').insert({ deck_id: t.dataset.id, front: f.get('f').trim(), back: f.get('b').trim() })); route(); },
+    onSubmit: async f => { if (!f.get('f').trim() || !f.get('b').trim()) throw new Error('Fill in both sides.'); await q(sb.from('flashcards').insert({ user_id: state.user.id, deck_id: t.dataset.id, front: f.get('f').trim(), back: f.get('b').trim() })); route(); },
   }),
   'edit-card': t => sheet({
     title: 'Edit card', body: `<div class="field"><label>Front</label><textarea name="f" rows="3">${esc(t.dataset.f)}</textarea></div><div class="field"><label>Back</label><textarea name="b" rows="3">${esc(t.dataset.b)}</textarea></div>`,
@@ -853,16 +856,13 @@ document.addEventListener('click', e => { const t = e.target.closest('[data-act]
 $('#fileIn').addEventListener('change', e => { uploadFiles([...e.target.files]); e.target.value = ''; });
 
 /* ───────── boot ───────── */
-let lastUser = undefined;
-async function onSession(session) {
-  const u = session?.user || null;
-  if (u?.id === lastUser?.id && lastUser !== undefined) { state.user = u; return; }
-  lastUser = u; state.user = u;
-  if (!u) { renderAuth(); applyTheme(document.documentElement.dataset.theme); return; }
+async function onSession() {
+  const uid = localStorage.getItem('learnx_user_id');
+  if (!uid) { state.user = null; renderAuth(); applyTheme(document.documentElement.dataset.theme); return; }
+  state.user = { id: uid, username: 'User' };
   renderShell(); await loadSettings(); route();
 }
-sb.auth.onAuthStateChange((_ev, session) => { setTimeout(() => onSession(session), 0); });
-sb.auth.getSession().then(({ data }) => onSession(data.session));
+onSession();
 </script>
 <canvas id="gl" aria-hidden="true"></canvas>
 <script>
